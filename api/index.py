@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify, render_template_string
 import requests
 import os
-from functools import lru_cache
 
 app = Flask(__name__)
 
@@ -22,6 +21,25 @@ HTML_TEMPLATE = '''
             <div class="bg-indigo-600 text-white p-6">
                 <h1 class="text-2xl font-bold mb-2">🤖 Document Chatbot</h1>
                 <p class="text-indigo-100">Ask questions about Python, LangChain, or Gemini</p>
+            </div>
+
+            <!-- API Key Input (if not set in backend) -->
+            <div id="apiKeySection" class="p-6 bg-yellow-50 border-b border-yellow-200" style="display: none;">
+                <div class="flex gap-3">
+                    <input 
+                        type="password" 
+                        id="apiKeyInput" 
+                        placeholder="Enter Google API Key..." 
+                        class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <button 
+                        onclick="saveApiKey()" 
+                        class="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 transition-colors"
+                    >
+                        Save
+                    </button>
+                </div>
+                <p class="text-xs text-gray-600 mt-2">Get your key from <a href="https://makersuite.google.com/app/apikey" target="_blank" class="text-indigo-600 hover:underline">Google AI Studio</a></p>
             </div>
 
             <!-- Messages Container -->
@@ -73,6 +91,7 @@ HTML_TEMPLATE = '''
         const messagesDiv = document.getElementById('messages');
         const userInput = document.getElementById('userInput');
         const sendBtn = document.getElementById('sendBtn');
+        let userApiKey = sessionStorage.getItem('gemini_api_key') || '';
 
         function addMessage(content, type) {
             const msgDiv = document.createElement('div');
@@ -111,6 +130,16 @@ HTML_TEMPLATE = '''
             if (loading) loading.remove();
         }
 
+        function saveApiKey() {
+            const key = document.getElementById('apiKeyInput').value.trim();
+            if (key) {
+                userApiKey = key;
+                sessionStorage.setItem('gemini_api_key', key);
+                document.getElementById('apiKeySection').style.display = 'none';
+                addMessage('✅ API key saved!', 'system');
+            }
+        }
+
         async function sendMessage() {
             const question = userInput.value.trim();
             if (!question) return;
@@ -123,7 +152,10 @@ HTML_TEMPLATE = '''
             try {
                 const response = await fetch('/api/chat', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'X-API-Key': userApiKey
+                    },
                     body: JSON.stringify({ question })
                 });
 
@@ -131,6 +163,9 @@ HTML_TEMPLATE = '''
                 removeLoadingMessage();
 
                 if (data.error) {
+                    if (data.error.includes('API key')) {
+                        document.getElementById('apiKeySection').style.display = 'block';
+                    }
                     addMessage(`❌ Error: ${data.error}`, 'error');
                 } else {
                     let answer = data.answer;
@@ -266,12 +301,19 @@ def chat():
         if not question:
             return jsonify({'error': 'No question provided'}), 400
         
-        # Get API key from environment variable
-        api_key = os.environ.get('GOOGLE_API_KEY')
+        # Try to get API key from multiple sources
+        api_key = request.headers.get('X-API-Key')
+        
+        if not api_key:
+            api_key = os.environ.get('GOOGLE_API_KEY') or os.getenv('GOOGLE_API_KEY')
+        
+        if not api_key:
+            api_key = data.get('api_key')
+        
         if not api_key:
             return jsonify({
-                'error': 'API key not configured. Please set GOOGLE_API_KEY environment variable.'
-            }), 500
+                'error': 'API key required. Please enter your Google API key.'
+            }), 401
         
         # Find relevant documents
         relevant_docs = find_relevant_docs(question)
@@ -323,18 +365,15 @@ def upload():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/documents', methods=['GET'])
-def list_documents():
-    """List all loaded documents"""
+@app.route('/api/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    api_key_set = bool(os.environ.get('GOOGLE_API_KEY') or os.getenv('GOOGLE_API_KEY'))
     return jsonify({
-        'documents': list(documents.keys()),
-        'count': len(documents)
+        'status': 'healthy',
+        'api_key_configured': api_key_set,
+        'documents_loaded': len(documents)
     })
 
-# For Vercel serverless function
-def handler(request):
-    with app.request_context(request.environ):
-        return app.full_dispatch_request()
-
-if __name__ == '__main__':
-    app.run(debug=True)
+# This is required for Vercel
+app = app
