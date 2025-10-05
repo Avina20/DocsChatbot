@@ -1,299 +1,22 @@
-from flask import Flask, request, jsonify, render_template_string
-import requests
+from flask import Flask, request, jsonify, render_template
 import os
+from api.config import Config
+from api.models import DocumentStore
+from api.services import GeminiService
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='templates')
 
-# HTML Template with embedded CSS and JavaScript
-HTML_TEMPLATE = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document Chatbot</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
-    <div class="container mx-auto px-4 py-8 max-w-4xl">
-        <div class="bg-white rounded-2xl shadow-xl overflow-hidden">
-            <!-- Header -->
-            <div class="bg-indigo-600 text-white p-6">
-                <h1 class="text-2xl font-bold mb-2">🤖 Document Chatbot</h1>
-                <p class="text-indigo-100">Ask questions about Python, LangChain, or Gemini</p>
-            </div>
-
-            <!-- API Key Input (if not set in backend) -->
-            <div id="apiKeySection" class="p-6 bg-yellow-50 border-b border-yellow-200" style="display: none;">
-                <div class="flex gap-3">
-                    <input 
-                        type="password" 
-                        id="apiKeyInput" 
-                        placeholder="Enter Google API Key..." 
-                        class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                    <button 
-                        onclick="saveApiKey()" 
-                        class="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 transition-colors"
-                    >
-                        Save
-                    </button>
-                </div>
-                <p class="text-xs text-gray-600 mt-2">Get your key from <a href="https://makersuite.google.com/app/apikey" target="_blank" class="text-indigo-600 hover:underline">Google AI Studio</a></p>
-            </div>
-
-            <!-- Messages Container -->
-            <div id="messages" class="p-6 space-y-4 h-96 overflow-y-auto bg-gray-50">
-                <div class="text-center text-gray-500 py-8">
-                    <p class="mb-2">👋 Welcome! Start asking questions.</p>
-                    <p class="text-sm">Sample documents are already loaded.</p>
-                </div>
-            </div>
-
-            <!-- Input Form -->
-            <div class="p-6 bg-white border-t border-gray-200">
-                <div class="flex gap-3">
-                    <input 
-                        type="text" 
-                        id="userInput" 
-                        placeholder="Ask a question..." 
-                        class="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                        onkeypress="handleKeyPress(event)"
-                    />
-                    <button 
-                        onclick="sendMessage()" 
-                        id="sendBtn"
-                        class="bg-indigo-600 text-white px-6 py-3 rounded-xl hover:bg-indigo-700 transition-colors font-medium"
-                    >
-                        Send
-                    </button>
-                </div>
-                <div class="mt-3 flex gap-2">
-                    <button 
-                        onclick="clearChat()" 
-                        class="text-sm text-gray-600 hover:text-gray-900"
-                    >
-                        🗑️ Clear Chat
-                    </button>
-                    <button 
-                        onclick="uploadDocument()" 
-                        class="text-sm text-indigo-600 hover:text-indigo-800"
-                    >
-                        📄 Upload Document
-                    </button>
-                </div>
-                <input type="file" id="fileInput" accept=".txt" style="display: none;" onchange="handleFileUpload(event)" />
-            </div>
-        </div>
-    </div>
-
-    <script>
-        const messagesDiv = document.getElementById('messages');
-        const userInput = document.getElementById('userInput');
-        const sendBtn = document.getElementById('sendBtn');
-        let userApiKey = sessionStorage.getItem('gemini_api_key') || '';
-
-        function addMessage(content, type) {
-            const msgDiv = document.createElement('div');
-            msgDiv.className = `flex ${type === 'user' ? 'justify-end' : 'justify-start'}`;
-            
-            const bubble = document.createElement('div');
-            bubble.className = `max-w-[80%] rounded-2xl px-4 py-3 ${
-                type === 'user' 
-                    ? 'bg-indigo-600 text-white' 
-                    : type === 'error'
-                    ? 'bg-red-50 text-red-700 border border-red-200'
-                    : 'bg-white shadow-md text-gray-900'
-            }`;
-            bubble.innerHTML = content;
-            
-            msgDiv.appendChild(bubble);
-            messagesDiv.appendChild(msgDiv);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-        }
-
-        function addLoadingMessage() {
-            const msgDiv = document.createElement('div');
-            msgDiv.id = 'loading';
-            msgDiv.className = 'flex justify-start';
-            msgDiv.innerHTML = `
-                <div class="bg-white shadow-md rounded-2xl px-4 py-3">
-                    <span class="text-gray-600">🤔 Thinking...</span>
-                </div>
-            `;
-            messagesDiv.appendChild(msgDiv);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-        }
-
-        function removeLoadingMessage() {
-            const loading = document.getElementById('loading');
-            if (loading) loading.remove();
-        }
-
-        function saveApiKey() {
-            const key = document.getElementById('apiKeyInput').value.trim();
-            if (key) {
-                userApiKey = key;
-                sessionStorage.setItem('gemini_api_key', key);
-                document.getElementById('apiKeySection').style.display = 'none';
-                addMessage('✅ API key saved!', 'system');
-            }
-        }
-
-        async function sendMessage() {
-            const question = userInput.value.trim();
-            if (!question) return;
-
-            addMessage(question, 'user');
-            userInput.value = '';
-            sendBtn.disabled = true;
-            addLoadingMessage();
-
-            try {
-                const response = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'X-API-Key': userApiKey
-                    },
-                    body: JSON.stringify({ question })
-                });
-
-                const data = await response.json();
-                removeLoadingMessage();
-
-                if (data.error) {
-                    if (data.error.includes('API key')) {
-                        document.getElementById('apiKeySection').style.display = 'block';
-                    }
-                    addMessage(`❌ Error: ${data.error}`, 'error');
-                } else {
-                    let answer = data.answer;
-                    if (data.sources && data.sources.length > 0) {
-                        answer += `<div class="mt-2 pt-2 border-t border-gray-200 text-xs text-gray-500">
-                            📚 Sources: ${data.sources.join(', ')}
-                        </div>`;
-                    }
-                    addMessage(answer, 'assistant');
-                }
-            } catch (error) {
-                removeLoadingMessage();
-                addMessage(`❌ Error: ${error.message}`, 'error');
-            } finally {
-                sendBtn.disabled = false;
-            }
-        }
-
-        function handleKeyPress(event) {
-            if (event.key === 'Enter') {
-                sendMessage();
-            }
-        }
-
-        function clearChat() {
-            messagesDiv.innerHTML = `
-                <div class="text-center text-gray-500 py-8">
-                    <p>Chat cleared! Start a new conversation.</p>
-                </div>
-            `;
-        }
-
-        function uploadDocument() {
-            document.getElementById('fileInput').click();
-        }
-
-        async function handleFileUpload(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-
-            const formData = new FormData();
-            formData.append('file', file);
-
-            addLoadingMessage();
-
-            try {
-                const response = await fetch('/api/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                const data = await response.json();
-                removeLoadingMessage();
-
-                if (data.error) {
-                    addMessage(`❌ ${data.error}`, 'error');
-                } else {
-                    addMessage(`✅ ${data.message}`, 'system');
-                }
-            } catch (error) {
-                removeLoadingMessage();
-                addMessage(`❌ Upload failed: ${error.message}`, 'error');
-            }
-
-            event.target.value = '';
-        }
-    </script>
-</body>
-</html>
-'''
-
-# Sample documents (in-memory storage)
-documents = {
-    'python_intro.txt': 'Python is a high-level programming language known for its simplicity and readability. It was created by Guido van Rossum and first released in 1991. Python supports multiple programming paradigms including procedural, object-oriented, and functional programming.',
-    'langchain_info.txt': 'LangChain is a framework for developing applications powered by language models. It provides tools for chaining together different components to build complex AI applications. LangChain supports various LLMs and provides abstractions for common tasks.',
-    'gemini_info.txt': 'Gemini 2.0 Flash is Google\'s latest AI model, optimized for speed and efficiency while maintaining high quality responses. It excels at reasoning, coding, and multimodal understanding. The model supports both text and image inputs.'
-}
-
-def call_gemini_api(prompt, api_key):
-    """Call Gemini API"""
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-    
-    headers = {
-        'Content-Type': 'application/json',
-        'X-goog-api-key': api_key
-    }
-    
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }],
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 1000
-        }
-    }
-    
-    response = requests.post(url, headers=headers, json=payload)
-    
-    if response.status_code != 200:
-        raise Exception(f"API Error: {response.status_code}")
-    
-    data = response.json()
-    return data['candidates'][0]['content']['parts'][0]['text']
-
-def find_relevant_docs(question):
-    """Simple keyword-based document search"""
-    question_lower = question.lower()
-    words = [w for w in question_lower.split() if len(w) > 3]
-    
-    scored = []
-    for doc_name, content in documents.items():
-        content_lower = content.lower()
-        score = sum(1 for word in words if word in content_lower)
-        if score > 0:
-            scored.append((doc_name, content, score))
-    
-    scored.sort(key=lambda x: x[2], reverse=True)
-    return [(name, content) for name, content, _ in scored[:3]]
+# Initialize document store
+doc_store = DocumentStore()
 
 @app.route('/')
 def index():
     """Serve the main page"""
-    return render_template_string(HTML_TEMPLATE)
+    return render_template('index.html')
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    """Handle chat requests"""
+    """Handle chat requests with semantic search"""
     try:
         data = request.json
         question = data.get('question', '')
@@ -301,36 +24,33 @@ def chat():
         if not question:
             return jsonify({'error': 'No question provided'}), 400
         
-        # Try to get API key from multiple sources
-        api_key = request.headers.get('X-API-Key')
-        
-        if not api_key:
-            api_key = os.environ.get('GOOGLE_API_KEY') or os.getenv('GOOGLE_API_KEY')
-        
-        if not api_key:
-            api_key = data.get('api_key')
+        # Get API key from multiple sources
+        api_key = (
+            request.headers.get('X-API-Key') or 
+            Config.GOOGLE_API_KEY or 
+            data.get('api_key')
+        )
         
         if not api_key:
             return jsonify({
                 'error': 'API key required. Please enter your Google API key.'
             }), 401
         
-        # Find relevant documents
-        relevant_docs = find_relevant_docs(question)
+        # Find relevant documents using semantic search
+        relevant_docs = doc_store.find_relevant_docs(
+            question, 
+            top_k=Config.TOP_K_DOCUMENTS,
+            threshold=Config.SIMILARITY_THRESHOLD
+        )
         
-        # Build prompt with context
-        if relevant_docs:
-            context = '\n\n'.join([f"[{name}]\n{content}" for name, content in relevant_docs])
-            prompt = f"Context from documents:\n\n{context}\n\nQuestion: {question}\n\nBased on the context above, please answer the question."
-        else:
-            prompt = f"Question: {question}\n\nPlease provide a helpful answer."
-        
-        # Call Gemini API
-        answer = call_gemini_api(prompt, api_key)
+        # Build prompt and get response
+        prompt = GeminiService.build_prompt_with_context(question, relevant_docs)
+        answer = GeminiService.generate_response(prompt, api_key)
         
         return jsonify({
             'answer': answer,
-            'sources': [name for name, _ in relevant_docs]
+            'sources': [name for name, _, _ in relevant_docs],
+            'similarities': [float(score) for _, _, score in relevant_docs]
         })
         
     except Exception as e:
@@ -348,32 +68,57 @@ def upload():
         if file.filename == '':
             return jsonify({'error': 'Empty filename'}), 400
         
-        if not file.filename.endswith('.txt'):
-            return jsonify({'error': 'Only .txt files are supported'}), 400
+        # Check file extension
+        file_ext = os.path.splitext(file.filename)[1].lower()
+        if file_ext not in Config.ALLOWED_EXTENSIONS:
+            return jsonify({
+                'error': f'Only {", ".join(Config.ALLOWED_EXTENSIONS)} files are supported'
+            }), 400
         
-        # Read file content
+        # Read and add document
         content = file.read().decode('utf-8')
-        
-        # Store in memory
-        documents[file.filename] = content
+        doc_store.add_document(file.filename, content)
         
         return jsonify({
-            'message': f'Document "{file.filename}" uploaded successfully!',
-            'total_docs': len(documents)
+            'message': f'Document "{file.filename}" uploaded and embedded successfully!',
+            'total_docs': doc_store.get_document_count()
         })
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/documents', methods=['GET'])
+def list_documents():
+    """List all loaded documents"""
+    return jsonify({
+        'documents': doc_store.get_all_documents(),
+        'count': doc_store.get_document_count()
+    })
+
+@app.route('/api/documents/<doc_name>', methods=['DELETE'])
+def delete_document(doc_name):
+    """Delete a specific document"""
+    if doc_store.remove_document(doc_name):
+        return jsonify({
+            'message': f'Document "{doc_name}" deleted successfully',
+            'remaining': doc_store.get_document_count()
+        })
+    return jsonify({'error': 'Document not found'}), 404
+
 @app.route('/api/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    api_key_set = bool(os.environ.get('GOOGLE_API_KEY') or os.getenv('GOOGLE_API_KEY'))
     return jsonify({
         'status': 'healthy',
-        'api_key_configured': api_key_set,
-        'documents_loaded': len(documents)
+        'api_key_configured': bool(Config.GOOGLE_API_KEY),
+        'documents_loaded': doc_store.get_document_count(),
+        'embedding_model': Config.EMBEDDING_MODEL,
+        'semantic_search': 'enabled',
+        'config': {
+            'top_k': Config.TOP_K_DOCUMENTS,
+            'similarity_threshold': Config.SIMILARITY_THRESHOLD
+        }
     })
 
-# This is required for Vercel
+# Required for Vercel
 app = app

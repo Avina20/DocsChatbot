@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document Chatbot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <div class="bg-white rounded-2xl shadow-xl overflow-hidden">
+            <!-- Header -->
+            <div class="bg-indigo-600 text-white p-6">
+                <h1 class="text-2xl font-bold mb-2">🤖 Document Chatbot</h1>
+                <p class="text-indigo-100">AI-powered semantic search with embeddings</p>
+            </div>
+
+            <!-- API Key Input -->
+            <div id="apiKeySection" class="p-6 bg-yellow-50 border-b border-yellow-200" style="display: none;">
+                <div class="flex gap-3">
+                    <input 
+                        type="password" 
+                        id="apiKeyInput" 
+                        placeholder="Enter Google API Key..." 
+                        class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <button 
+                        onclick="saveApiKey()" 
+                        class="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 transition-colors"
+                    >
+                        Save
+                    </button>
+                </div>
+                <p class="text-xs text-gray-600 mt-2">Get your key from <a href="https://makersuite.google.com/app/apikey" target="_blank" class="text-indigo-600 hover:underline">Google AI Studio</a></p>
+            </div>
+
+            <!-- Messages Container -->
+            <div id="messages" class="p-6 space-y-4 h-96 overflow-y-auto bg-gray-50">
+                <div class="text-center text-gray-500 py-8">
+                    <p class="mb-2">👋 Welcome! Using semantic search with embeddings.</p>
+                    <p class="text-sm">Sample documents loaded. Try: "Who made Python?"</p>
+                </div>
+            </div>
+
+            <!-- Input Form -->
+            <div class="p-6 bg-white border-t border-gray-200">
+                <div class="flex gap-3">
+                    <input 
+                        type="text" 
+                        id="userInput" 
+                        placeholder="Ask a question..." 
+                        class="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        onkeypress="handleKeyPress(event)"
+                    />
+                    <button 
+                        onclick="sendMessage()" 
+                        id="sendBtn"
+                        class="bg-indigo-600 text-white px-6 py-3 rounded-xl hover:bg-indigo-700 transition-colors font-medium"
+                    >
+                        Send
+                    </button>
+                </div>
+                <div class="mt-3 flex gap-2">
+                    <button 
+                        onclick="clearChat()" 
+                        class="text-sm text-gray-600 hover:text-gray-900"
+                    >
+                        🗑️ Clear Chat
+                    </button>
+                    <button 
+                        onclick="uploadDocument()" 
+                        class="text-sm text-indigo-600 hover:text-indigo-800"
+                    >
+                        📄 Upload Document
+                    </button>
+                </div>
+                <input type="file" id="fileInput" accept=".txt" style="display: none;" onchange="handleFileUpload(event)" />
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const messagesDiv = document.getElementById('messages');
+        const userInput = document.getElementById('userInput');
+        const sendBtn = document.getElementById('sendBtn');
+        let userApiKey = sessionStorage.getItem('gemini_api_key') || '';
+
+        function addMessage(content, type) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `flex ${type === 'user' ? 'justify-end' : 'justify-start'}`;
+            
+            const bubble = document.createElement('div');
+            bubble.className = `max-w-[80%] rounded-2xl px-4 py-3 ${
+                type === 'user' 
+                    ? 'bg-indigo-600 text-white' 
+                    : type === 'error'
+                    ? 'bg-red-50 text-red-700 border border-red-200'
+                    : type === 'system'
+                    ? 'bg-green-50 text-green-700 border border-green-200'
+                    : 'bg-white shadow-md text-gray-900'
+            }`;
+            bubble.innerHTML = content;
+            
+            msgDiv.appendChild(bubble);
+            messagesDiv.appendChild(msgDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function addLoadingMessage() {
+            const msgDiv = document.createElement('div');
+            msgDiv.id = 'loading';
+            msgDiv.className = 'flex justify-start';
+            msgDiv.innerHTML = `
+                <div class="bg-white shadow-md rounded-2xl px-4 py-3">
+                    <span class="text-gray-600">🤔 Thinking...</span>
+                </div>
+            `;
+            messagesDiv.appendChild(msgDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function removeLoadingMessage() {
+            const loading = document.getElementById('loading');
+            if (loading) loading.remove();
+        }
+
+        function saveApiKey() {
+            const key = document.getElementById('apiKeyInput').value.trim();
+            if (key) {
+                userApiKey = key;
+                sessionStorage.setItem('gemini_api_key', key);
+                document.getElementById('apiKeySection').style.display = 'none';
+                addMessage('✅ API key saved!', 'system');
+            }
+        }
+
+        async function sendMessage() {
+            const question = userInput.value.trim();
+            if (!question) return;
+
+            addMessage(question, 'user');
+            userInput.value = '';
+            sendBtn.disabled = true;
+            addLoadingMessage();
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'X-API-Key': userApiKey
+                    },
+                    body: JSON.stringify({ question })
+                });
+
+                const data = await response.json();
+                removeLoadingMessage();
+
+                if (data.error) {
+                    if (data.error.includes('API key')) {
+                        document.getElementById('apiKeySection').style.display = 'block';
+                    }
+                    addMessage(`❌ Error: ${data.error}`, 'error');
+                } else {
+                    let answer = data.answer;
+                    if (data.sources && data.sources.length > 0) {
+                        answer += `<div class="mt-2 pt-2 border-t border-gray-200 text-xs text-gray-500">
+                            🧠 Semantic search found: ${data.sources.join(', ')}
+                        </div>`;
+                    }
+                    addMessage(answer, 'assistant');
+                }
+            } catch (error) {
+                removeLoadingMessage();
+                addMessage(`❌ Error: ${error.message}`, 'error');
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        function clearChat() {
+            messagesDiv.innerHTML = `
+                <div class="text-center text-gray-500 py-8">
+                    <p>Chat cleared! Start a new conversation.</p>
+                </div>
+            `;
+        }
+
+        function uploadDocument() {
+            document.getElementById('fileInput').click();
+        }
+
+        async function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            addLoadingMessage();
+
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+                removeLoadingMessage();
+
+                if (data.error) {
+                    addMessage(`❌ ${data.error}`, 'error');
+                } else {
+                    addMessage(`✅ ${data.message}`, 'system');
+                }
+            } catch (error) {
+                removeLoadingMessage();
+                addMessage(`❌ Upload failed: ${error.message}`, 'error');
+            }
+
+            event.target.value = '';
+        }
+    </script>
+</body>
+</html>
